@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useContext, createContext } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -61,9 +61,18 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { EnterpriseTable } from "./enterprise-table";
 import { WorkforceSync } from "./workforce-sync";
 
+import { ActionWorkspace, RequestList, SearchContext, ModeContext, useSavedState, downloadCSV, type RequestRecord } from "./action-workspace";
+const TableContext = createContext<(h:string[],r:string[][])=>void>(()=>{});
+
+import { Revenue } from "./revenue";
+import { Restrictions } from "./restrictions";
+
 type Page =
+  | "Revenue & Settlements"
+  | "Account Restrictions"
   | "Overview"
   | "Exception Center"
   | "Customers"
@@ -135,11 +144,13 @@ const NAV: {
     group: "Control",
     items: [
       { name: "Risk & Fraud", icon: ShieldAlert, badge: "6" },
+      { name: "Account Restrictions", icon: ShieldCheck },
       { name: "Reconciliation", icon: RefreshCw, badge: "3" },
       { name: "Incident Command", icon: Activity, badge: "1" },
       { name: "Support Cases", icon: Headphones, badge: "18" },
       { name: "Partner Management", icon: Building2 },
       { name: "Fees & FX", icon: SlidersHorizontal },
+      { name: "Revenue & Settlements", icon: CircleDollarSign },
       { name: "Compliance", icon: ShieldCheck },
       { name: "Approvals", icon: ClipboardCheck, badge: "9" },
     ],
@@ -331,6 +342,8 @@ const queue = [
   ],
 ];
 const desc: Record<Page, string> = {
+  "Revenue & Settlements": "Separate beneficiary funds, Prospeva revenue and partner shares; prepare and review demonstration settlements.",
+  "Account Restrictions": "Review scoped restrictions and restoration requests for businesses, employers, employees and personal users.",
   Overview:
     "Platform health, money movement and required actions across Prospeva.",
   "Exception Center":
@@ -476,32 +489,11 @@ function DataTable({
   rows: string[][];
   select: (x: any[]) => void;
 }) {
-  return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          {headers.map((h) => (
-            <TableHead key={h}>{h}</TableHead>
-          ))}
-          <TableHead />
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {rows.map((r) => (
-          <TableRow key={r[0]} onClick={() => select(r)} className="click-row">
-            {r.map((c, j) => (
-              <TableCell key={j}>
-                {j === r.length - 1 ? <Status value={c} /> : c}
-              </TableCell>
-            ))}
-            <TableCell>
-              <ChevronRight size={16} />
-            </TableCell>
-          </TableRow>
-        ))}
-      </TableBody>
-    </Table>
-  );
+  const globalQuery=useContext(SearchContext);
+  const register=useContext(TableContext);
+  const dataKey=JSON.stringify([headers,rows]);
+  useEffect(()=>{register(headers,rows)},[dataKey,register]);
+  return <EnterpriseTable headers={headers} rows={rows} query={globalQuery} select={select}/>;
 }
 
 export default function Home() {
@@ -511,7 +503,7 @@ export default function Home() {
     [query, setQuery] = useState(""),
     [notice, setNotice] = useState(""),
     [aiOpen, setAiOpen] = useState(false),
-    [environment, setEnvironment] = useState("Production"),
+    [environment, setEnvironment] = useState("Demonstration"),
     [isOnline, setIsOnline] = useState(true),
     [aiInput, setAiInput] = useState("");
   const [messages, setMessages] = useState<
@@ -519,17 +511,27 @@ export default function Home() {
   >([
     {
       who: "ai",
-      text: "Good morning, Aisha. I found 3 settlement mismatches and one high-risk payroll exception. What would you like to review?",
+      text: "This demonstration assistant can summarize the sample risk, rail and reconciliation records. A live AI service is not connected.",
     },
   ]);
-  const go = (p: Page) => {
-    setPage(p);
-    setMenu(false);
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  };
+  const [collapsed,setCollapsed]=useSavedState<Record<string,boolean>>("navigation",{});
+  const [previousPage,setPreviousPage]=useState<Page|null>(null);
+  const [queryByPage,setQueryByPage]=useState<Record<string,string>>({});
+  const [workflow,setWorkflow]=useState("");
+  const [workflowRecord,setWorkflowRecord]=useState<string[]|null>(null);
+  const [existingRequest,setExistingRequest]=useState<RequestRecord>();
+  const [requests,setRequests]=useState<RequestRecord[]>([]);
+  const [lastRefresh,setLastRefresh]=useState("Not refreshed");
+  const [tableData,setTableData]=useState<{headers:string[];rows:string[][]}>({headers:[],rows:[]});
+  const [registerTable]=useState(()=>(headers:string[],rows:string[][])=>setTableData({headers,rows}));
+  useEffect(()=>{try{setRequests(JSON.parse(localStorage.getItem("prospeva-admin-requests")||"[]"))}catch{setNotice("Saved requests could not be loaded.")}},[]);
+  const saveRequest=(r:RequestRecord)=>{const next=[r,...requests.filter(x=>x.id!==r.id)];try{localStorage.setItem("prospeva-admin-requests",JSON.stringify(next));setRequests(next);return true}catch{return false}};
+  const go = (p: Page) => {setPreviousPage(page);setQueryByPage(q=>({...q,[page]:query}));setPage(p);setMenu(false);setQuery(queryByPage[p]||"");setTableData({headers:[],rows:[]});window.history.replaceState(null,"",'#'+encodeURIComponent(p));window.scrollTo({top:0,behavior:"smooth"});};
+  useEffect(()=>{try{const target=decodeURIComponent(window.location.hash.slice(1));if(NAV.some(g=>g.items.some(i=>i.name===target)))setPage(target as Page)}catch{}},[]);
   const act = (m: string) => {
-    setNotice(m);
-    setTimeout(() => setNotice(""), 3400);
+    if(/ProspevaAI|with AI/i.test(m)){setSelected(null);setAiOpen(true);return}
+    if(/refreshed|Queue refreshed/i.test(m)){setLastRefresh(new Date().toLocaleTimeString());setNotice("Sample data refreshed. No live service was contacted.");setTimeout(()=>setNotice(""),3400);return}
+    setWorkflowRecord(selected);setSelected(null);setExistingRequest(undefined);setWorkflow(m);
   };
   const sendAI = () => {
     if (!aiInput.trim()) return;
@@ -540,10 +542,12 @@ export default function Home() {
       {
         who: "ai",
         text: /rail|route/i.test(q)
-          ? "PAPSS is the best supported route for this corridor: USD 2.10 total fees, a 42-second estimate and GHS 6,104 exact recipient amount. I can draft a Treasury recommendation."
+          ? "Sample rail snapshot: IIPS / NEPS 99.96%, PAPSS 99.82%, Onafriq 99.71%, Pay-Na Na 98.64%. These are demonstration figures, not current partner availability or a routing recommendation."
           : /risk|fraud|ghost/i.test(q)
-            ? "The priority signal is a duplicate salary destination across three employee records. Payroll remains held. I can open the evidence bundle or draft a Risk escalation."
-            : "I can summarize exceptions, trace a payment, compare rail costs or draft a controlled action for approval.",
+          ? "Sample risk queue: RSK-2078 account takeover is Critical; RSK-2081 ghost employee pattern is High. Open Risk & Fraud to inspect the sample records and create a review request."
+          : /reconcil|settlement/i.test(q)
+          ? "Sample reconciliation records: REC-4812 USD 50 difference, REC-4808 LRD 4,000 difference, REC-4794 USD 770 without a partner record. Review each record before proposing an adjustment."
+          : "This is a sample-data assistant, not a connected AI model. I can show sample risk, rail and reconciliation summaries. Live ProspevaAI requires a configured AI service and permission-aware backend."
       },
     ]);
     setAiInput("");
@@ -559,7 +563,7 @@ export default function Home() {
     };
   }, []);
   return (
-    <div className="app-shell">
+    <ModeContext.Provider value={environment==="Read-only"}><SearchContext.Provider value={query}><TableContext.Provider value={registerTable}><div className="app-shell">
       {notice && (
         <div className="toast">
           <BadgeCheck size={18} />
@@ -595,10 +599,10 @@ export default function Home() {
         <nav>
           {NAV.map((s) => (
             <div className="nav-group" key={s.group}>
-              <p>{s.group}</p>
-              {s.items.map((i) => (
+              <button className="nav-group-toggle" aria-expanded={!collapsed[s.group]} onClick={()=>setCollapsed(c=>({...c,[s.group]:!c[s.group]}))}>{s.group}<span aria-hidden="true">{collapsed[s.group]?"+":"−"}</span></button>
+              {!collapsed[s.group]&&s.items.map((i) => (
                 <button
-                  className={page === i.name ? "active" : ""}
+                  aria-current={page===i.name?"page":undefined} className={page === i.name ? "active" : ""}
                   onClick={() => go(i.name)}
                   key={i.name}
                 >
@@ -614,7 +618,7 @@ export default function Home() {
           <ShieldCheck size={18} />
           <div>
             <b>Secure workspace</b>
-            <span>MFA • session monitored</span>
+            <span>Sample data • local drafts</span>
           </div>
         </div>
       </aside>
@@ -625,7 +629,7 @@ export default function Home() {
           aria-label="Close navigation"
         />
       )}
-      <main className="main">
+      <a className="skip-link" href="#workspace">Skip to workspace</a><main className="main" id="workspace">
         <header className="topbar">
           <button
             className="menu-button"
@@ -648,8 +652,8 @@ export default function Home() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="Production">Production</SelectItem>
-              <SelectItem value="Sandbox">Sandbox</SelectItem>
+              <SelectItem value="Demonstration">Demonstration</SelectItem>
+              
               <SelectItem value="Read-only">Read-only</SelectItem>
             </SelectContent>
           </Select>
@@ -658,11 +662,11 @@ export default function Home() {
             onClick={() => go("Connectivity Operations")}
           >
             <i />
-            {isOnline ? "Control plane online" : "Console offline"}
+            {isOnline ? "Browser online" : "Browser offline"}
           </button>
           <button
             className="icon-btn"
-            onClick={() => act("You have 5 new operational alerts.")}
+            onClick={() => act("Operational notifications")}
             aria-label="Notifications"
           >
             <Bell size={20} />
@@ -675,7 +679,7 @@ export default function Home() {
         </header>
         <div className="page-head">
           <div>
-            <p className="eyebrow">Prospeva control plane</p>
+            <div className="breadcrumbs">{previousPage&&<button onClick={()=>go(previousPage)}>Back to {previousPage}</button>}<span>Admin / {page}</span></div>
             <h1>{page}</h1>
             <p>{desc[page]}</p>
           </div>
@@ -693,8 +697,14 @@ export default function Home() {
             </Button>
           </div>
         </div>
+        <div className="demo-banner"><b>Interactive demonstration</b><span>Sample data only. Drafts and attachments stay in this browser. Payments, partner services and live AI are not connected.</span></div>
+        {query&&<div className="global-results"><b>Search modules</b>{NAV.flatMap(g=>g.items).filter(i=>i.name.toLowerCase().includes(query.toLowerCase())).map(i=><Button key={i.name} variant="outline" onClick={()=>go(i.name)}>{i.name}</Button>)}<small>Tables below are also filtered by your search.</small></div>}
         <div className="content">
-          <PageContent
+          {(page==="Approvals"||page==="Audit Log"||page==="Customers"||page==="Organizations"||page==="Employers"||page==="Roles & Access")&&<div className="action-strip"><Button variant="outline" onClick={()=>go("Account Restrictions")}>Manage account restrictions</Button></div>}
+          {page==="Audit Log"&&<Restrictions historyOnly/>}
+          {(page==="Approvals"||page==="Audit Log")&&<RequestList requests={requests} onOpen={r=>{setExistingRequest(r);setWorkflowRecord(null);setWorkflow(r.action)}}/>}
+          {(page==="Payroll Operations"||page==="Partner Management"||page==="Transactions")&&<div className="action-strip"><Button onClick={()=>act(page==="Payroll Operations"?"Create payroll review":page==="Partner Management"?"Configure partner connection":"Request transaction refund")}>{page==="Payroll Operations"?"Create payroll review":page==="Partner Management"?"Configure partner connection":"Request refund review"}</Button></div>}
+          <PageContent key={page}
             page={page}
             query={query}
             go={go}
@@ -704,8 +714,8 @@ export default function Home() {
         </div>
         <footer>
           <span>Prospeva Admin Control</span>
-          <span>Production • Liberia • UTC</span>
-          <span>Last sync: just now</span>
+          <span>Demonstration • Liberia • UTC</span>
+          <span>Sample refresh: {lastRefresh}</span>
         </footer>
       </main>
       <button className="ai-launcher" onClick={() => setAiOpen(true)}>
@@ -719,7 +729,7 @@ export default function Home() {
               {selected?.[1] || selected?.[0] || "Record details"}
             </SheetTitle>
             <SheetDescription>
-              Authoritative Prospeva record and connected activity.
+              Sample record details. Connected actions create local demonstration requests.
             </SheetDescription>
           </SheetHeader>
           {selected && (
@@ -741,14 +751,7 @@ export default function Home() {
                 {selected.map((v, i) => (
                   <div key={i}>
                     <dt>
-                      {[
-                        "Reference",
-                        "Name / type",
-                        "Subject",
-                        "Value",
-                        "Route",
-                        "Status",
-                      ][i] || `Field ${i + 1}`}
+                      {(selected as any).labels?.[i] || tableData.headers[i] || (page==="Employers"?["Event reference","Employee","Event","Location","Source","Status"][i]:page==="Onboarding & KYC"?["Case reference","Applicant","Profile","Required evidence","Submitted","Status"][i]:undefined) || `Record detail ${i+1}`}
                     </dt>
                     <dd>{v}</dd>
                   </div>
@@ -766,7 +769,7 @@ export default function Home() {
                   </button>
                   <button
                     onClick={() =>
-                      act("Draft action created for maker-checker approval.")
+                      act("Create controlled action")
                     }
                   >
                     Create controlled action
@@ -786,13 +789,13 @@ export default function Home() {
               ProspevaAI Control Copilot
             </SheetTitle>
             <SheetDescription>
-              Analyzes permitted data. It cannot approve or release funds.
+              Sample-data assistant. Live AI is not connected; it cannot approve or release funds.
             </SheetDescription>
           </SheetHeader>
           <div className="ai-scope">
             <Pill tone="blue">Role: Super Admin</Pill>
             <Pill>Scope: Liberia</Pill>
-            <Pill tone="green">Read access active</Pill>
+            <Pill tone="amber">Sample responses</Pill>
           </div>
           <div className="ai-prompts">
             <button onClick={() => setAiInput("Show the highest risk case")}>
@@ -828,7 +831,8 @@ export default function Home() {
           </div>
         </SheetContent>
       </Sheet>
-    </div>
+      {workflow&&<ActionWorkspace key={workflow+(existingRequest?.id||"")} action={workflow} page={existingRequest?.page||page} selected={workflowRecord} requests={requests} existing={existingRequest} readOnly={environment==="Read-only"} headers={tableData.headers.length?tableData.headers:workspaces[page]?.headers||["Reference","Description","Status","Availability","Detail","Scope"]} rows={tableData.rows.length?tableData.rows:page==="Payment Rails"?rails.map(r=>[r.name,r.role,r.status,r.rate,r.latency,r.currencies]):workspaces[page]?.rows||[]} onClose={()=>setWorkflow("")} onSave={saveRequest}/>}
+    </div></TableContext.Provider></SearchContext.Provider></ModeContext.Provider>
   );
 }
 
@@ -845,6 +849,8 @@ function PageContent({
   select: (x: any[]) => void;
   act: (s: string) => void;
 }) {
+  if (page === "Revenue & Settlements") return <Revenue />;
+  if (page === "Account Restrictions") return <Restrictions />;
   if (page === "Overview") return <Overview go={go} select={select} />;
   if (page === "Customers")
     return (
@@ -918,7 +924,7 @@ function AgentKycQueue({
       status: "Escalated",
     },
   ];
-  const [cases, setCases] = useState(initial),
+  const [cases, setCases] = useSavedState("kyc",initial),
     [filter, setFilter] = useState("all");
   const update = (id: string, status: string) => {
     setCases((all) => all.map((c) => (c.id === id ? { ...c, status } : c)));
@@ -1014,12 +1020,12 @@ function AgentKycQueue({
               </Button>
               <Button
                 variant="outline"
-                onClick={() => update(c.id, "Returned")}
+                onClick={() => act(`Return case ${c.id}`)}
               >
                 Return
               </Button>
               <Button
-                onClick={() => update(c.id, "Approved")}
+                onClick={() => act(`Approve agent ${c.id}`)}
                 disabled={c.status === "Approved"}
               >
                 Approve agent
@@ -1052,8 +1058,9 @@ function ConnectivityOperations({
   act: (s: string) => void;
   select: (x: any[]) => void;
 }) {
-  const [liteEnabled, setLiteEnabled] = useState(true);
-  const [autoSync, setAutoSync] = useState(true);
+  const readOnly=useContext(ModeContext);
+  const [liteEnabled, setLiteEnabled] = useSavedState("lite",true);
+  const [autoSync, setAutoSync] = useSavedState("auto-sync",true);
   const queue = [
     ["OFF-82041", "Personal transfer draft", "USSD", "LRD 4,500", "12 min", "Waiting for connection"],
     ["OFF-82039", "Agent withdrawal code", "Agent network", "USD 85.00", "8 min", "Awaiting validation"],
@@ -1073,14 +1080,14 @@ function ConnectivityOperations({
       </div>
       <div className="connectivity-grid">
         <Panel title="Channel controls">
-          <div className="connectivity-switch"><Network/><span><b>Prospeva Lite · USSD/SMS</b><small>Feature-phone initiation and status checks</small></span><Switch checked={liteEnabled} onCheckedChange={v=>{setLiteEnabled(v);act(`Lite channel ${v?"enabled":"paused"} — approval recorded.`)}}/></div>
-          <div className="connectivity-switch"><RefreshCw/><span><b>Automatic synchronization</b><small>Revalidate expiry, identity, balance and idempotency</small></span><Switch checked={autoSync} onCheckedChange={v=>{setAutoSync(v);act(`Automatic synchronization ${v?"enabled":"paused"}.`)}}/></div>
+          <div className="connectivity-switch"><Network/><span><b>Prospeva Lite · USSD/SMS</b><small>Feature-phone initiation and status checks</small></span><Switch disabled={readOnly} checked={liteEnabled} onCheckedChange={v=>{setLiteEnabled(v);act(`Draft Lite channel change: ${v?"enabled":"paused"}`)}}/></div>
+          <div className="connectivity-switch"><RefreshCw/><span><b>Automatic synchronization</b><small>Revalidate expiry, identity, balance and idempotency</small></span><Switch disabled={readOnly} checked={autoSync} onCheckedChange={v=>{setAutoSync(v);act(`Automatic synchronization ${v?"enabled":"paused"}.`)}}/></div>
           <div className="connectivity-switch"><Store/><span><b>Agent cash channel</b><small>Six-digit code validation and live cash availability</small></span><Status value="Operational"/></div>
           <div className="connectivity-switch"><ShieldCheck/><span><b>High-risk offline release</b><small>Payroll, bulk payouts and privileged approvals</small></span><Status value="Restricted"/></div>
         </Panel>
         <Panel title="Safety policy">
           <div className="offline-policy">{["Never show Completed before ledger confirmation","Reject expired or replayed codes","Detect duplicates before submission","Preserve original device timestamps","Require online maker-checker for bulk money movement"].map(x=><p key={x}><BadgeCheck/>{x}</p>)}</div>
-          <div className="button-row"><Button variant="outline" onClick={()=>act("Offline policy opened.")}>Review policy</Button><Button variant="outline" onClick={()=>act("Recovery drill started in sandbox.")}>Run recovery drill</Button></div>
+          <div className="button-row"><Button variant="outline" onClick={()=>act("Offline policy opened.")}>Review policy</Button><Button variant="outline" onClick={()=>act("Recovery drill")}>Run recovery drill</Button></div>
         </Panel>
       </div>
       <Panel title="Cross-portal synchronization queue" action={<Button variant="outline" onClick={()=>act("Queue refreshed and checked for duplicates.")}><RefreshCw size={15}/>Refresh queue</Button>}>
@@ -1102,6 +1109,7 @@ function Overview({
   go: (p: Page) => void;
   select: (x: any[]) => void;
 }) {
+  const [currency,setCurrency]=useState("all");
   return (
     <>
       <div className="metrics">
@@ -1152,7 +1160,7 @@ function Overview({
         <Panel
           title="Money movement — last 7 days"
           action={
-            <Select defaultValue="all">
+            <Select value={currency} onValueChange={setCurrency}>
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>
@@ -1167,11 +1175,11 @@ function Overview({
           <div className="chart">
             <div className="chart-total">
               <span>Processed value</span>
-              <strong>LRD 294.6M</strong>
+              <strong>{currency==="usd"?"USD 478,420":currency==="lrd"?"LRD 199.3M":"LRD 294.6M equivalent"}</strong>
               <em>+12.4%</em>
             </div>
             <div className="bars">
-              {[45, 68, 54, 79, 62, 88, 73].map((h, i) => (
+              {(currency==="usd"?[35,55,42,68,48,72,64]:currency==="lrd"?[51,76,61,86,71,94,80]:[45,68,54,79,62,88,73]).map((h, i) => (
                 <div key={i}>
                   <span style={{ height: `${h}%` }} />
                   <b>{["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][i]}</b>
@@ -1300,19 +1308,15 @@ function Overview({
 }
 
 function Toolbar({
-  placeholder,
-  act,
-}: {
-  placeholder: string;
-  act: (s: string) => void;
-}) {
+  placeholder, act, search, setSearch, status, setStatus, onExport,
+}: {placeholder:string;act:(s:string)=>void;search:string;setSearch:(s:string)=>void;status:string;setStatus:(s:string)=>void;onExport:()=>void}) {
   return (
     <div className="toolbar">
       <div>
         <Search size={18} />
-        <Input placeholder={placeholder} />
+        <Input placeholder={placeholder} value={search} onChange={e=>setSearch(e.target.value)} />
       </div>
-      <Select defaultValue="all">
+      <Select value={status} onValueChange={setStatus}>
         <SelectTrigger>
           <SelectValue />
         </SelectTrigger>
@@ -1325,7 +1329,7 @@ function Toolbar({
       </Select>
       <Button
         variant="outline"
-        onClick={() => act("Export request sent for approval.")}
+        onClick={onExport}
       >
         Export
       </Button>
@@ -1343,6 +1347,7 @@ function Directory({
   select: (x: any[]) => void;
   act: (s: string) => void;
 }) {
+  const [search,setSearch]=useState("");const [status,setStatus]=useState("all");const [orgType,setOrgType]=useState("");
   let rows: string[][], headers: string[], placeholder: string;
   if (kind === "customers") {
     rows = [
@@ -1391,12 +1396,11 @@ function Directory({
     headers = ["Reference", "Type", "Parties", "Amount", "Rail", "Status"];
     placeholder = "Search transaction, reference or destination";
   }
-  rows = rows.filter((r) =>
-    r.join(" ").toLowerCase().includes(query.toLowerCase()),
-  );
+  rows = rows.filter(r=>{const text=r.join(" ").toLowerCase();return text.includes(query.toLowerCase())&&text.includes(search.toLowerCase())&&(!orgType||r[1].toLowerCase()===orgType)&&(status==="all"||(status==="active"?/active|verified|settled/.test(text):status==="review"?/review|processing|pending/.test(text):/held|restricted|high/.test(text)))});
   return (
     <>
-      <Toolbar placeholder={placeholder} act={act} />
+      <Toolbar placeholder={placeholder} act={act} search={search} setSearch={setSearch} status={status} setStatus={setStatus} onExport={()=>downloadCSV(kind,headers,rows)} />
+      {orgType&&<Button variant="outline" onClick={()=>setOrgType("")}>Clear organization filter: {orgType}</Button>}
       {kind === "organizations" && (
         <div className="type-strip">
           {[
@@ -1410,7 +1414,7 @@ function Directory({
             ["Landlords", "518"],
             ["Susu groups", "1,092"],
           ].map((x) => (
-            <button onClick={() => act(`${x[0]} filter applied.`)} key={x[0]}>
+            <button onClick={() => setOrgType(x[0].toLowerCase().replace(/s$/, ""))} key={x[0]}>
               <b>{x[1]}</b>
               <span>{x[0]}</span>
             </button>
@@ -1433,7 +1437,7 @@ function Directory({
                 ? "18,294"
                 : "5,620"
           }
-          delta="Current production view"
+          delta="Demonstration snapshot"
           icon={Users}
         />
         <Metric
@@ -1459,7 +1463,8 @@ function Directory({
 }
 
 function Rails({ act }: { act: (s: string) => void }) {
-  const [auto, setAuto] = useState(true);
+  const readOnly=useContext(ModeContext);
+  const [auto, setAuto] = useSavedState("routing",true);
   return (
     <>
       <div className="route-banner">
@@ -1473,7 +1478,7 @@ function Rails({ act }: { act: (s: string) => void }) {
             </small>
           </span>
         </div>
-        <Switch
+        <Switch disabled={readOnly}
           checked={auto}
           onCheckedChange={(v) => {
             setAuto(v);
@@ -1553,7 +1558,8 @@ function Risk({
   select: (x: any[]) => void;
   act: (s: string) => void;
 }) {
-  const [ghost, setGhost] = useState(true);
+  const readOnly=useContext(ModeContext);
+  const [ghost, setGhost] = useSavedState("ghost",true);
   return (
     <>
       <div className="route-banner risk">
@@ -1567,7 +1573,7 @@ function Risk({
             </small>
           </span>
         </div>
-        <Switch
+        <Switch disabled={readOnly}
           checked={ghost}
           onCheckedChange={(v) => {
             setGhost(v);
@@ -1755,7 +1761,9 @@ function LoanEligibility({
   select: (x: any[]) => void;
   act: (s: string) => void;
 }) {
-  const [enforced, setEnforced] = useState(true);
+  const readOnly=useContext(ModeContext);
+  const [enforced, setEnforced] = useSavedState("eligibility",true);
+  const [eligibility,setEligibility]=useState("all");
   const rows = [
     [
       "CUS-84201",
@@ -1822,7 +1830,7 @@ function LoanEligibility({
             </small>
           </span>
         </div>
-        <Switch
+        <Switch disabled={readOnly}
           checked={enforced}
           onCheckedChange={(v) => {
             setEnforced(v);
@@ -1899,7 +1907,7 @@ function LoanEligibility({
       <Panel
         title="Customer loan-access controls"
         action={
-          <Select defaultValue="all">
+          <Select value={eligibility} onValueChange={setEligibility}>
             <SelectTrigger>
               <SelectValue />
             </SelectTrigger>
@@ -1921,7 +1929,7 @@ function LoanEligibility({
             "Consent",
             "Loan status",
           ]}
-          rows={rows}
+          rows={rows.filter(r=>eligibility==="all"|| (eligibility==="standalone"?r[2]==="Not linked":eligibility==="blocked"?r[5]==="New offers blocked":r[2].includes("active")))}
           select={select}
         />
       </Panel>
@@ -1941,8 +1949,9 @@ function LoanEligibility({
 }
 
 function FeatureControls({ act }: { act: (s: string) => void }) {
+  const readOnly=useContext(ModeContext);
   const initial = [true, true, true, true, false, false, true, true];
-  const [states, setStates] = useState(initial);
+  const [states, setStates] = useSavedState("features",initial);
   const features = [
     [
       "PAPSS cross-border",
@@ -1984,11 +1993,11 @@ function FeatureControls({ act }: { act: (s: string) => void }) {
             key={f[0]}
             title={f[0]}
             action={
-              <Switch
+              <Switch disabled={readOnly}
                 checked={states[i]}
                 onCheckedChange={(v) => {
                   setStates((s) => s.map((x, j) => (j === i ? v : x)));
-                  act(`${f[0]} change staged for approval.`);
+                  act(`Draft ${f[0]} change: ${v?"enabled":"paused"}`);
                 }}
               />
             }
