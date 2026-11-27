@@ -1,21 +1,22 @@
 {
-  "name": "site-creator-vinext-starter",
+  "name": "prospeva-admin",
   "version": "0.1.0",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
   },
   "scripts": {
-
-"dev": "next dev",
-"build": "next build",
-"start": "next start",
-"lint": "eslint ."
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint ."
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",
     "@hookform/resolvers": "^5.7.1",
     "@shadcn/react": "^0.3.0",
+    "@tanstack/react-query": "^5.108.4",
+    "@tanstack/react-table": "^8.21.3",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "cmdk": "^1.1.1",
@@ -24,7 +25,6 @@
     "input-otp": "^1.4.2",
     "lucide-react": "^1.31.0",
     "next": "16.2.6",
-    "next-themes": "^0.4.6",
     "radix-ui": "^1.6.7",
     "react": "19.2.6",
     "react-day-picker": "^10.0.1",
@@ -35,7 +35,8 @@
     "sonner": "^2.0.8",
     "tailwind-merge": "3.6.0",
     "vaul": "^1.1.2",
-    "zod": "^3.25.76"
+    "zod": "^3.25.76",
+    "zustand": "^5.1.0"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "4.2.1",
