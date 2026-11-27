@@ -1,7 +1,8 @@
 "use client";
 import {useContext,useEffect,useState} from 'react';
 import {Button} from '@/components/ui/button';
-import {ModeContext,SearchContext,downloadCSV} from './action-workspace';
+import {ModeContext,SearchContext} from '@/components/shell/contexts';
+import {downloadCSV} from '@/lib/csv';
 import {allocations,totals,net,entitlements,available,type Batch} from '@/lib/revenue-model';
 type Proposal={id:string;kind:string;subject:string;value:string;effective:string;reason:string;time:string};
 type Saved={batches:Batch[];proposals:Proposal[]};
